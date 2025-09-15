@@ -79,7 +79,7 @@
 
 <script>
 function editDomain(id) {
-    alert(`Edit domain functionality would redirect to edit form for domain ID: ${id}`);
+    window.location.href = `/admin/domains/edit/${id}`;
 }
 
 function deleteDomain(id, code) {
@@ -89,3 +89,7 @@ function deleteDomain(id, code) {
 }
 </script>
 {% endblock %}
+
+
+
+

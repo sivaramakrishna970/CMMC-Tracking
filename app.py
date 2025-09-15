@@ -237,7 +237,16 @@ def admin_panel():
 @app.route('/admin/requirements')
 @admin_required
 def admin_requirements():
-    requirements = CMMCRequirement.query.all()
+    level_filter = request.args.get('level')
+    domain_filter = request.args.get('domain')
+    
+    query = CMMCRequirement.query
+    if level_filter:
+        query = query.filter_by(level_id=level_filter)
+    if domain_filter:
+        query = query.filter_by(domain_id=domain_filter)
+    
+    requirements = query.all()
     levels = CMMCLevel.query.all()
     domains = CMMCDomain.query.all()
     return render_template('admin/requirements.html', requirements=requirements, 
@@ -264,6 +273,27 @@ def admin_add_requirement():
     domains = CMMCDomain.query.all()
     return render_template('admin/add_requirement.html', levels=levels, domains=domains)
 
+@app.route('/admin/requirements/edit/<int:id>', methods=['GET', 'POST'])
+@admin_required
+def admin_edit_requirement(id):
+    requirement = CMMCRequirement.query.get_or_404(id)
+    
+    if request.method == 'POST':
+        requirement.requirement_id = request.form['requirement_id']
+        requirement.title = request.form['title']
+        requirement.description = request.form['description']
+        requirement.level_id = request.form['level_id']
+        requirement.domain_id = request.form['domain_id']
+        requirement.guidance = request.form['guidance']
+        
+        db.session.commit()
+        flash('Requirement updated successfully!', 'success')
+        return redirect(url_for('admin_requirements'))
+    
+    levels = CMMCLevel.query.all()
+    domains = CMMCDomain.query.all()
+    return render_template('admin/edit_requirement.html', requirement=requirement, levels=levels, domains=domains)
+
 @app.route('/admin/levels')
 @admin_required
 def admin_levels():
@@ -286,6 +316,22 @@ def admin_add_level():
     
     return render_template('admin/add_level.html')
 
+@app.route('/admin/levels/edit/<int:id>', methods=['GET', 'POST'])
+@admin_required
+def admin_edit_level(id):
+    level = CMMCLevel.query.get_or_404(id)
+    
+    if request.method == 'POST':
+        level.level_number = request.form['level_number']
+        level.name = request.form['name']
+        level.description = request.form['description']
+        
+        db.session.commit()
+        flash('Level updated successfully!', 'success')
+        return redirect(url_for('admin_levels'))
+    
+    return render_template('admin/edit_level.html', level=level)
+
 @app.route('/admin/domains')
 @admin_required
 def admin_domains():
@@ -307,6 +353,22 @@ def admin_add_domain():
         return redirect(url_for('admin_domains'))
     
     return render_template('admin/add_domain.html')
+
+@app.route('/admin/domains/edit/<int:id>', methods=['GET', 'POST'])
+@admin_required
+def admin_edit_domain(id):
+    domain = CMMCDomain.query.get_or_404(id)
+    
+    if request.method == 'POST':
+        domain.code = request.form['code']
+        domain.name = request.form['name']
+        domain.description = request.form['description']
+        
+        db.session.commit()
+        flash('Domain updated successfully!', 'success')
+        return redirect(url_for('admin_domains'))
+    
+    return render_template('admin/edit_domain.html', domain=domain)
 
 @app.route('/admin/reports')
 @admin_required
@@ -402,9 +464,9 @@ def api_compliance_summary():
     return jsonify(status_counts)
 
 def init_database():
-    """Initialize the database with sample data"""
+    """Initialize the database with CMMC Level 1 data as per the guide."""
     db.create_all()
-    
+
     # Create admin user if it doesn't exist
     if not User.query.filter_by(username='admin').first():
         admin = User(
@@ -415,98 +477,162 @@ def init_database():
             company='System Administrator'
         )
         db.session.add(admin)
-    
-    # Add CMMC Levels
+
+    # Add CMMC Levels if they don't exist
     if not CMMCLevel.query.first():
         levels = [
-            CMMCLevel(level_number=1, name="Basic Cyber Hygiene", 
-                     description="Basic cybersecurity practices"),
-            CMMCLevel(level_number=2, name="Intermediate Cyber Hygiene", 
-                     description="Implementation of NIST SP 800-171 practices"),
-            CMMCLevel(level_number=3, name="Good Cyber Hygiene", 
-                     description="Advanced cybersecurity practices")
+            CMMCLevel(level_number=1, name="Basic Cyber Hygiene",
+                      description="Focuses on the protection of Federal Contract Information (FCI) and encompasses the basic safeguarding requirements specified in FAR Clause 52.204-21."),
+            CMMCLevel(level_number=2, name="Intermediate Cyber Hygiene",
+                      description="Implementation of NIST SP 800-171 practices"),
+            CMMCLevel(level_number=3, name="Good Cyber Hygiene",
+                      description="Advanced cybersecurity practices")
         ]
-        for level in levels:
-            db.session.add(level)
-    
-    # Add CMMC Domains
+        db.session.add_all(levels)
+
+    # Add CMMC Domains if they don't exist
     if not CMMCDomain.query.first():
         domains = [
-            CMMCDomain(code="AC", name="Access Control", 
-                      description="Limit information system access to authorized users"),
-            CMMCDomain(code="AU", name="Audit and Accountability", 
-                      description="Create, protect, and retain system audit records"),
-            CMMCDomain(code="AT", name="Awareness and Training", 
-                      description="Ensure that personnel are trained in cybersecurity"),
-            CMMCDomain(code="CM", name="Configuration Management", 
-                      description="Establish and maintain baseline configurations"),
-            CMMCDomain(code="IA", name="Identification and Authentication", 
-                      description="Identify and authenticate users and devices"),
-            CMMCDomain(code="IR", name="Incident Response", 
-                      description="Establish operational incident response capability"),
-            CMMCDomain(code="MA", name="Maintenance", 
-                      description="Perform maintenance on systems and components"),
-            CMMCDomain(code="MP", name="Media Protection", 
-                      description="Protect and control information and media"),
-            CMMCDomain(code="PS", name="Personnel Security", 
-                      description="Ensure trustworthiness of personnel"),
-            CMMCDomain(code="PE", name="Physical Protection", 
-                      description="Limit physical access to systems and equipment"),
-            CMMCDomain(code="RA", name="Risk Assessment", 
-                      description="Assess and manage organizational risk"),
-            CMMCDomain(code="CA", name="Security Assessment", 
-                      description="Develop and implement security assessment plans"),
-            CMMCDomain(code="SC", name="System and Communications Protection", 
-                      description="Monitor and control communications"),
-            CMMCDomain(code="SI", name="System and Information Integrity", 
-                      description="Identify, report, and correct system flaws")
+            CMMCDomain(code="AC", name="Access Control",
+                       description="Limit information system access to authorized users"),
+            CMMCDomain(code="AU", name="Audit and Accountability",
+                       description="Create, protect, and retain system audit records"),
+            CMMCDomain(code="AT", name="Awareness and Training",
+                       description="Ensure that personnel are trained in cybersecurity"),
+            CMMCDomain(code="CM", name="Configuration Management",
+                       description="Establish and maintain baseline configurations"),
+            CMMCDomain(code="IA", name="Identification and Authentication",
+                       description="Identify and authenticate users and devices"),
+            CMMCDomain(code="IR", name="Incident Response",
+                       description="Establish operational incident response capability"),
+            CMMCDomain(code="MA", name="Maintenance",
+                       description="Perform maintenance on systems and components"),
+            CMMCDomain(code="MP", name="Media Protection",
+                       description="Protect and control information and media"),
+            CMMCDomain(code="PS", name="Personnel Security",
+                       description="Ensure trustworthiness of personnel"),
+            CMMCDomain(code="PE", name="Physical Protection",
+                       description="Limit physical access to systems and equipment"),
+            CMMCDomain(code="RA", name="Risk Assessment",
+                       description="Assess and manage organizational risk"),
+            CMMCDomain(code="CA", name="Security Assessment",
+                       description="Develop and implement security assessment plans"),
+            CMMCDomain(code="SC", name="System and Communications Protection",
+                       description="Monitor and control communications"),
+            CMMCDomain(code="SI", name="System and Information Integrity",
+                       description="Identify, report, and correct system flaws")
         ]
-        for domain in domains:
-            db.session.add(domain)
-    
-    # Add sample requirements
-    if not CMMCRequirement.query.first():
-        sample_requirements = [
+        db.session.add_all(domains)
+
+    # Commit levels and domains so they can be queried for requirements
+    db.session.commit()
+
+    # Add CMMC Level 1 Requirements
+    if not CMMCRequirement.query.filter_by(level_id=CMMCLevel.query.filter_by(level_number=1).first().id).first():
+        level_1_requirements = [
             {
-                "requirement_id": "AC.L1-3.1.1",
-                "title": "Authorized Access Control",
+                "requirement_id": "AC.L1-3.1.1", "title": "Authorized Access Control", "domain": "AC",
                 "description": "Limit information system access to authorized users, processes acting on behalf of authorized users, or devices (including other information systems).",
-                "level": 1,
-                "domain": "AC",
-                "guidance": "Implement user accounts and access controls. Use strong passwords and multi-factor authentication where possible."
+                "guidance": "Maintain a list of authorized users, processes, and devices. Ensure the system is configured to grant access only to those on the approved list."
             },
             {
-                "requirement_id": "AC.L1-3.1.2", 
-                "title": "Transaction and Function Control",
+                "requirement_id": "AC.L1-3.1.2", "title": "Transaction & Function Control", "domain": "AC",
                 "description": "Limit information system access to the types of transactions and functions that authorized users are permitted to execute.",
-                "level": 1,
-                "domain": "AC",
-                "guidance": "Implement role-based access control (RBAC) to ensure users can only access functions they need for their job."
+                "guidance": "Use role-based access control (RBAC) to ensure users can only perform functions necessary for their job roles (e.g., create, read, update, delete)."
             },
             {
-                "requirement_id": "AU.L2-3.3.1",
-                "title": "Audit Events",
-                "description": "Create and retain information system audit records to the extent needed to enable the monitoring, analysis, investigation, and reporting of unlawful or unauthorized information system activity.",
-                "level": 2,
-                "domain": "AU",
-                "guidance": "Configure logging on all systems and ensure logs are retained for at least 90 days. Monitor for suspicious activities."
+                "requirement_id": "AC.L1-3.1.20", "title": "External Connections", "domain": "AC",
+                "description": "Verify and control/limit connections to and use of external information systems.",
+                "guidance": "Use firewalls and connection policies to manage connections between your network and external ones. Control access from personally owned devices."
+            },
+            {
+                "requirement_id": "AC.L1-3.1.22", "title": "Control Public Information", "domain": "AC",
+                "description": "Control information posted or processed on publicly accessible information systems.",
+                "guidance": "Establish a review process to prevent Federal Contract Information (FCI) from being posted on public systems like company websites or forums."
+            },
+            {
+                "requirement_id": "IA.L1-3.5.1", "title": "Identification", "domain": "IA",
+                "description": "Identify information system users, processes acting on behalf of users, or devices.",
+                "guidance": "Assign unique identifiers (e.g., usernames) to all users, processes, and devices that require access to company systems."
+            },
+            {
+                "requirement_id": "IA.L1-3.5.2", "title": "Authentication", "domain": "IA",
+                "description": "Authenticate (or verify) the identities of those users, processes, or devices, as a prerequisite to allowing access to organizational information systems.",
+                "guidance": "Verify identity before granting access, typically with a username and strong password. Always change default passwords on new devices and systems."
+            },
+            {
+                "requirement_id": "MP.L1-3.8.3", "title": "Media Disposal", "domain": "MP",
+                "description": "Sanitize or destroy information system media containing Federal Contract Information before disposal or release for reuse.",
+                "guidance": "For any media containing FCI (e.g., paper, USB drives, hard drives), either physically destroy it or use a secure sanitization process to erase the data before disposal or reuse."
+            },
+            {
+                "requirement_id": "PE.L1-3.10.1", "title": "Limit Physical Access", "domain": "PE",
+                "description": "Limit physical access to organizational information systems, equipment, and the respective operating environments to authorized individuals.",
+                "guidance": "Use locks, card readers, or other physical controls to restrict access to offices, server rooms, and equipment. Maintain a list of personnel with authorized physical access."
+            },
+            {
+                "requirement_id": "PE.L1-3.10.3", "title": "Escort Visitors", "domain": "PE",
+                "description": "Escort visitors and monitor visitor activity.",
+                "guidance": "Ensure all visitors are escorted by an employee at all times within the facility and wear visitor identification."
+            },
+            {
+                "requirement_id": "PE.L1-3.10.4", "title": "Physical Access Logs", "domain": "PE",
+                "description": "Maintain audit logs of physical access.",
+                "guidance": "Use a sign-in sheet or electronic system to log all individuals entering and leaving the facility. Retain these logs for a defined period."
+            },
+            {
+                "requirement_id": "PE.L1-3.10.5", "title": "Manage Physical Access", "domain": "PE",
+                "description": "Control and manage physical access devices.",
+                "guidance": "Keep an inventory of all physical access devices like keys and key cards. Know who has them, and revoke access when personnel leave or change roles."
+            },
+            {
+                "requirement_id": "SC.L1-3.13.1", "title": "Boundary Protection", "domain": "SC",
+                "description": "Monitor, control, and protect organizational communications (i.e., information transmitted or received by organizational information systems) at the external boundaries and key internal boundaries of the information systems.",
+                "guidance": "Use firewalls to protect the boundary between your internal network and the internet, blocking unwanted traffic and malicious websites."
+            },
+            {
+                "requirement_id": "SC.L1-3.13.5", "title": "Public-Access System Separation", "domain": "SC",
+                "description": "Implement subnetworks for publicly accessible system components that are physically or logically separated from internal networks.",
+                "guidance": "Isolate publicly accessible systems (like a public website) from your internal network using a demilitarized zone (DMZ) or separate VLAN."
+            },
+            {
+                "requirement_id": "SI.L1-3.14.1", "title": "Flaw Remediation", "domain": "SI",
+                "description": "Identify, report, and correct information and information system flaws in a timely manner.",
+                "guidance": "Implement a patch management process to fix software and firmware flaws within a defined timeframe based on vendor notifications."
+            },
+            {
+                "requirement_id": "SI.L1-3.14.2", "title": "Malicious Code Protection", "domain": "SI",
+                "description": "Provide protection from malicious code at appropriate locations within organizational information systems.",
+                "guidance": "Use anti-virus and anti-malware software on workstations, servers, and firewalls to protect against malicious code like viruses and ransomware."
+            },
+            {
+                "requirement_id": "SI.L1-3.14.4", "title": "Update Malicious Code Protection", "domain": "SI",
+                "description": "Update malicious code protection mechanisms when new releases are available.",
+                "guidance": "Configure anti-malware software to update its definition files automatically and frequently (e.g., daily) to protect against the latest threats."
+            },
+            {
+                "requirement_id": "SI.L1-3.14.5", "title": "System & File Scanning", "domain": "SI",
+                "description": "Perform periodic scans of the information system and real-time scans of files from external sources as files are downloaded, opened, or executed.",
+                "guidance": "Configure anti-malware software to perform periodic full-system scans and real-time scans of files from external sources like email attachments and USB drives."
             }
         ]
-        
-        for req_data in sample_requirements:
-            level = CMMCLevel.query.filter_by(level_number=req_data['level']).first()
+
+        level1 = CMMCLevel.query.filter_by(level_number=1).first()
+
+        for req_data in level_1_requirements:
             domain = CMMCDomain.query.filter_by(code=req_data['domain']).first()
             
-            requirement = CMMCRequirement(
-                requirement_id=req_data['requirement_id'],
-                title=req_data['title'],
-                description=req_data['description'],
-                level_id=level.id,
-                domain_id=domain.id,
-                guidance=req_data['guidance']
-            )
-            db.session.add(requirement)
-    
+            if domain:
+                requirement = CMMCRequirement(
+                    requirement_id=req_data['requirement_id'],
+                    title=req_data['title'],
+                    description=req_data['description'],
+                    level_id=level1.id,
+                    domain_id=domain.id,
+                    guidance=req_data['guidance']
+                )
+                db.session.add(requirement)
+
     db.session.commit()
 
 if __name__ == '__main__':

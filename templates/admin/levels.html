@@ -79,7 +79,7 @@
 
 <script>
 function editLevel(id) {
-    alert(`Edit level functionality would redirect to edit form for level ID: ${id}`);
+    window.location.href = `/admin/levels/edit/${id}`;
 }
 
 function deleteLevel(id, levelNumber) {
@@ -89,3 +89,7 @@ function deleteLevel(id, levelNumber) {
 }
 </script>
 {% endblock %}
+
+
+
+
