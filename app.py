@@ -1,9 +1,11 @@
+import hashlib
 import os
+import secrets
 from datetime import datetime
 from functools import wraps
 
-from flask import (Flask, flash, jsonify, redirect, render_template, request,
-                   session, url_for)
+from flask import (Flask, flash, jsonify, make_response, redirect,
+                   render_template, request, session, url_for)
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -23,6 +25,8 @@ class User(db.Model):
     role = db.Column(db.String(20), default='user')  # 'admin' or 'user'
     company = db.Column(db.String(200))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # Authorization flag: only authorized users may access the system
+    is_authorized = db.Column(db.Boolean, default=False, nullable=False)
 
 class CMMCLevel(db.Model):
     __tablename__ = 'cmmc_level'
@@ -68,6 +72,34 @@ class ComplianceRecord(db.Model):
     user = db.relationship('User', backref='compliance_records')
     requirement = db.relationship('CMMCRequirement', backref='compliance_records')
 
+# New Models for objectives (processes and devices)
+class ServiceAccount(db.Model):
+    __tablename__ = 'service_account'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), nullable=False)
+    owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    token_hash = db.Column(db.String(64), unique=True, nullable=False)
+    scopes = db.Column(db.String(255), default='read:summary')
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    owner_user = db.relationship('User', backref='service_accounts')
+
+class AuthorizedDevice(db.Model):
+    __tablename__ = 'authorized_device'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    device_name = db.Column(db.String(200))
+    device_token = db.Column(db.String(64), unique=True, nullable=False)
+    is_approved = db.Column(db.Boolean, default=False, nullable=False)
+    last_seen_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    user = db.relationship('User', backref='devices')
+
+def _generate_token() -> str:
+    return secrets.token_urlsafe(32)
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode('utf-8')).hexdigest()
+
 # Authentication decorator
 def login_required(f):
     @wraps(f)
@@ -91,6 +123,78 @@ def admin_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+def authorized_user_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            flash('Please log in to access this page.', 'warning')
+            return redirect(url_for('login'))
+        user = User.query.get(session['user_id'])
+        if not user or not user.is_authorized:
+            flash('Your account is awaiting authorization by an administrator.', 'warning')
+            return redirect(url_for('index'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+def service_token_required(required_scopes: list[str] | None = None):
+    def decorator(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            auth_header = request.headers.get('Authorization', '')
+            if not auth_header.startswith('Bearer '):
+                return jsonify({'error': 'Missing bearer token'}), 401
+            token = auth_header.split(' ', 1)[1].strip()
+            token_h = _hash_token(token)
+            sa = ServiceAccount.query.filter_by(token_hash=token_h, is_active=True).first()
+            if not sa:
+                return jsonify({'error': 'Invalid token'}), 401
+            if required_scopes:
+                account_scopes = set((sa.scopes or '').split(','))
+                if not set(required_scopes).issubset(account_scopes):
+                    return jsonify({'error': 'Insufficient scope'}), 403
+            return f(*args, **kwargs)
+        return wrapper
+    return decorator
+
+@app.before_request
+def enforce_device_and_user_authorization():
+    # Allow public routes
+    open_endpoints = {
+        'index', 'login', 'register', 'logout', 'static', 'device_pending'
+    }
+    if request.endpoint in open_endpoints:
+        return None
+    if 'user_id' not in session:
+        return None
+    user = User.query.get(session['user_id'])
+    if not user:
+        session.clear()
+        return redirect(url_for('login'))
+    # Enforce user authorization
+    if not user.is_authorized:
+        flash('Your account is awaiting authorization by an administrator.', 'warning')
+        return redirect(url_for('index'))
+    # Exempt admins from device verification to avoid blocking admin access
+    if user.role == 'admin':
+        return None
+    # Enforce device approval
+    device_token = request.cookies.get('device_token')
+    if not device_token:
+        # Create a pending device and set cookie at response time via special endpoint
+        return redirect(url_for('device_pending'))
+    # We store hashed token in DB; hash cookie value for lookup
+    hashed = hashlib.sha256(device_token.encode('utf-8')).hexdigest()
+    device = AuthorizedDevice.query.filter_by(device_token=hashed).first()
+    if not device:
+        return redirect(url_for('device_pending'))
+    # Associate device with user if not already
+    if not device.user_id:
+        device.user_id = user.id
+        db.session.commit()
+    if not device.is_approved:
+        return redirect(url_for('device_pending'))
+    return None
+
 # Routes
 @app.route('/')
 def index():
@@ -104,10 +208,38 @@ def login():
         
         user = User.query.filter_by(username=username).first()
         if user and check_password_hash(user.password_hash, password):
+            if not user.is_authorized:
+                flash('Login blocked: your account is not yet authorized by an administrator.', 'warning')
+                return render_template('login.html')
             session['user_id'] = user.id
             session['user_role'] = user.role
             flash('Logged in successfully!', 'success')
-            return redirect(url_for('dashboard'))
+            # Ensure device token exists and pending record created
+            device_token = request.cookies.get('device_token')
+            new_cookie_token = None
+            if not device_token:
+                new_cookie_token = _generate_token()
+                device_token = new_cookie_token
+            device = AuthorizedDevice.query.filter_by(device_token=device_token).first()
+            if not device:
+                device = AuthorizedDevice(
+                    user_id=user.id,
+                    device_name=request.user_agent.string[:180] if request.user_agent else 'Unknown Device',
+                    device_token=hashlib.sha256(device_token.encode('utf-8')).hexdigest(),
+                    is_approved=False
+                )
+                # Note: we store hashed token; cookie stores raw token
+                db.session.add(device)
+                db.session.commit()
+            else:
+                device.last_seen_at = datetime.utcnow()
+                if not device.user_id:
+                    device.user_id = user.id
+                db.session.commit()
+            resp = redirect(url_for('dashboard'))
+            if new_cookie_token:
+                resp.set_cookie('device_token', new_cookie_token, httponly=True, samesite='Lax')
+            return resp
         flash('Invalid username or password.', 'error')
     
     return render_template('login.html')
@@ -146,6 +278,7 @@ def logout():
 
 @app.route('/dashboard')
 @login_required
+@authorized_user_required
 def dashboard():
     user = User.query.get(session['user_id'])
     
@@ -207,6 +340,7 @@ def dashboard():
 
 @app.route('/requirements')
 @login_required
+@authorized_user_required
 def requirements():
     level_filter = request.args.get('level')
     domain_filter = request.args.get('domain')
@@ -409,6 +543,82 @@ def admin_reports():
                          level_stats=level_stats,
                          recent_records=recent_records)
 
+# Admin: Users management (authorize/revoke)
+@app.route('/admin/users')
+@admin_required
+def admin_users():
+    users = User.query.all()
+    return render_template('admin/users.html', users=users)
+
+@app.route('/admin/users/toggle/<int:user_id>', methods=['POST'])
+@admin_required
+def admin_toggle_user(user_id):
+    user = User.query.get_or_404(user_id)
+    if user.username == 'admin' and not user.is_authorized:
+        # Ensure admin is authorized by default
+        user.is_authorized = True
+    else:
+        user.is_authorized = not user.is_authorized
+    db.session.commit()
+    flash('User authorization status updated.', 'success')
+    return redirect(url_for('admin_users'))
+
+# Admin: Devices management
+@app.route('/admin/devices')
+@admin_required
+def admin_devices():
+    devices = AuthorizedDevice.query.order_by(AuthorizedDevice.last_seen_at.desc()).all()
+    return render_template('admin/devices.html', devices=devices)
+
+@app.route('/admin/devices/approve/<int:device_id>', methods=['POST'])
+@admin_required
+def admin_approve_device(device_id):
+    device = AuthorizedDevice.query.get_or_404(device_id)
+    device.is_approved = True
+    db.session.commit()
+    flash('Device approved.', 'success')
+    return redirect(url_for('admin_devices'))
+
+@app.route('/admin/devices/revoke/<int:device_id>', methods=['POST'])
+@admin_required
+def admin_revoke_device(device_id):
+    device = AuthorizedDevice.query.get_or_404(device_id)
+    device.is_approved = False
+    db.session.commit()
+    flash('Device revoked.', 'warning')
+    return redirect(url_for('admin_devices'))
+
+# Admin: Service accounts
+@app.route('/admin/service-accounts', methods=['GET', 'POST'])
+@admin_required
+def admin_service_accounts():
+    if request.method == 'POST':
+        name = request.form['name']
+        scopes = request.form.get('scopes', 'read:summary')
+        raw_token = _generate_token()
+        sa = ServiceAccount(
+            name=name,
+            owner_user_id=session.get('user_id'),
+            token_hash=_hash_token(raw_token),
+            scopes=scopes,
+            is_active=True
+        )
+        db.session.add(sa)
+        db.session.commit()
+        flash(f'New service token (copy now): {raw_token}', 'success')
+        return redirect(url_for('admin_service_accounts'))
+    accounts = ServiceAccount.query.all()
+    return render_template('admin/service_accounts.html', accounts=accounts)
+
+@app.route('/admin/service-accounts/toggle/<int:account_id>', methods=['POST'])
+@admin_required
+def admin_toggle_service_account(account_id):
+    sa = ServiceAccount.query.get_or_404(account_id)
+    sa.is_active = not sa.is_active
+    db.session.commit()
+    flash('Service account status updated.', 'success')
+    return redirect(url_for('admin_service_accounts'))
+
 @app.route('/compliance/<int:requirement_id>', methods=['GET', 'POST'])
 @login_required
 def compliance_record(requirement_id):
@@ -463,6 +673,52 @@ def api_compliance_summary():
     
     return jsonify(status_counts)
 
+# Service API for processes acting on behalf of users
+@app.route('/api/service/compliance-summary')
+@service_token_required(required_scopes=['read:summary'])
+def api_service_compliance_summary():
+    user_id = request.args.get('user_id', type=int)
+    if not user_id:
+        return jsonify({'error': 'user_id is required'}), 400
+    total_requirements = CMMCRequirement.query.count()
+    user_records = ComplianceRecord.query.filter_by(user_id=user_id).all()
+    status_counts = {
+        'compliant': 0,
+        'non_compliant': 0,
+        'in_progress': 0,
+        'not_started': total_requirements - len(user_records)
+    }
+    for record in user_records:
+        if record.status in status_counts:
+            status_counts[record.status] += 1
+    return jsonify(status_counts)
+
+@app.route('/device-pending')
+@login_required
+def device_pending():
+    # Ensure device cookie exists; if not, set one and create pending device record
+    device_token = request.cookies.get('device_token')
+    new_cookie_token = None
+    if not device_token:
+        new_cookie_token = _generate_token()
+        device_token = new_cookie_token
+    # Store hashed token in DB
+    hashed = hashlib.sha256(device_token.encode('utf-8')).hexdigest()
+    device = AuthorizedDevice.query.filter_by(device_token=hashed).first()
+    if not device:
+        device = AuthorizedDevice(
+            user_id=session.get('user_id'),
+            device_name=request.user_agent.string[:180] if request.user_agent else 'Unknown Device',
+            device_token=hashed,
+            is_approved=False
+        )
+        db.session.add(device)
+        db.session.commit()
+    resp = make_response(render_template('device_pending.html', device=device))
+    if new_cookie_token:
+        resp.set_cookie('device_token', new_cookie_token, httponly=True, samesite='Lax')
+    return resp
+
 def init_database():
     """Initialize the database with CMMC Level 1 data as per the guide."""
     db.create_all()
@@ -474,7 +730,8 @@ def init_database():
             email='admin@example.com',
             password_hash=generate_password_hash('admin123'),
             role='admin',
-            company='System Administrator'
+            company='System Administrator',
+            is_authorized=True
         )
         db.session.add(admin)
 
