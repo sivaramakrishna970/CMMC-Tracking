@@ -35,7 +35,7 @@
                     <h3 class="text-lg font-medium text-gray-900">Compliance Status</h3>
                 </div>
                 
-                <form method="POST" class="p-6 space-y-6">
+                <form id="complianceForm" method="POST" class="p-6 space-y-6">
                     <!-- Current Status Display -->
                     {% if record %}
                     <div class="bg-gray-50 rounded-lg p-4">
@@ -130,13 +130,23 @@
                         <p class="text-xs text-gray-500 mt-1">These notes will help you track your implementation progress and provide context for auditors.</p>
                     </div>
 
-                    <!-- File Upload Section (Future Enhancement) -->
+                <!-- File Upload Section -->
                     <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
                         <h4 class="text-sm font-medium text-blue-800 mb-2">
                             <i class="fas fa-upload mr-1"></i>
-                            Artifact Upload (Coming Soon)
+                            Artifact Upload
                         </h4>
-                        <p class="text-sm text-blue-700">File upload functionality for compliance artifacts will be available in a future update.</p>
+                        <div class="space-y-2">
+                            <input type="file" name="artifact" accept=".pdf,.png,.jpg,.jpeg,.txt,.doc,.docx,.xlsx,.csv" class="block w-full text-sm text-gray-700">
+                            {% if record and record.artifact_path %}
+                            <div class="text-sm text-blue-800">
+                                Current artifact: 
+                                <a class="text-blue-600 underline" href="{{ url_for('static', filename=record.artifact_path.lstrip('/') ) }}" target="_blank">View / Download</a>
+                            </div>
+                            {% else %}
+                            <p class="text-sm text-blue-700">No artifact uploaded yet. Accepted types: PDF, images, text, Office docs, CSV.</p>
+                            {% endif %}
+                        </div>
                     </div>
 
                     <!-- Action Buttons -->
@@ -199,12 +209,12 @@
                     <h3 class="text-lg font-medium text-gray-900">Quick Actions</h3>
                 </div>
                 <div class="p-6 space-y-3">
-                    <button onclick="markCompliant()" class="w-full flex items-center justify-center p-2 border border-green-300 rounded-lg hover:bg-green-50 transition duration-200 text-sm">
+                    <button type="button" onclick="markCompliant()" class="w-full flex items-center justify-center p-2 border border-green-300 rounded-lg hover:bg-green-50 transition duration-200 text-sm">
                         <i class="fas fa-check text-green-600 mr-2"></i>
                         Mark as Compliant
                     </button>
                     
-                    <button onclick="markInProgress()" class="w-full flex items-center justify-center p-2 border border-yellow-300 rounded-lg hover:bg-yellow-50 transition duration-200 text-sm">
+                    <button type="button" onclick="markInProgress()" class="w-full flex items-center justify-center p-2 border border-yellow-300 rounded-lg hover:bg-yellow-50 transition duration-200 text-sm">
                         <i class="fas fa-clock text-yellow-600 mr-2"></i>
                         Mark as In Progress
                     </button>
@@ -222,10 +232,12 @@
 <script>
 function markCompliant() {
     document.querySelector('input[value="compliant"]').checked = true;
+    document.getElementById('complianceForm').submit();
 }
 
 function markInProgress() {
     document.querySelector('input[value="in_progress"]').checked = true;
+    document.getElementById('complianceForm').submit();
 }
 
 // Auto-save draft functionality (could be enhanced)

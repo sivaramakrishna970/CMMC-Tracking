@@ -8,11 +8,23 @@ from flask import (Flask, flash, jsonify, make_response, redirect,
                    render_template, request, session, url_for)
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key-here'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///cmmc_tracking.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20MB
+
+# File uploads configuration (store inside /static/uploads)
+STATIC_UPLOADS_SUBDIR = 'uploads'
+app.config['STATIC_UPLOADS_SUBDIR'] = STATIC_UPLOADS_SUBDIR
+app.config['UPLOAD_EXTENSIONS'] = {'.pdf', '.png', '.jpg', '.jpeg', '.txt', '.doc', '.docx', '.xlsx', '.csv'}
+
+def _ensure_upload_dir_exists():
+    uploads_dir = os.path.join(app.static_folder, STATIC_UPLOADS_SUBDIR)
+    os.makedirs(uploads_dir, exist_ok=True)
+    return uploads_dir
 
 db = SQLAlchemy(app)
 
@@ -631,17 +643,36 @@ def compliance_record(requirement_id):
     if request.method == 'POST':
         status = request.form['status']
         notes = request.form['notes']
-        
+
+        # Handle artifact upload (optional)
+        artifact_file = request.files.get('artifact')
+        artifact_path = None
+        if artifact_file and artifact_file.filename:
+            filename = secure_filename(artifact_file.filename)
+            ext = os.path.splitext(filename)[1].lower()
+            if ext not in app.config['UPLOAD_EXTENSIONS']:
+                flash('Unsupported file type. Allowed: ' + ', '.join(sorted(app.config['UPLOAD_EXTENSIONS'])), 'error')
+                return redirect(request.url)
+            uploads_dir = _ensure_upload_dir_exists()
+            unique_name = f"{session['user_id']}_{requirement_id}_{int(datetime.utcnow().timestamp())}_{secrets.token_hex(8)}{ext}"
+            saved_path = os.path.join(uploads_dir, unique_name)
+            artifact_file.save(saved_path)
+            # Store relative path under static for serving
+            artifact_path = f"/{STATIC_UPLOADS_SUBDIR}/{unique_name}"
+
         if record:
             record.status = status
             record.notes = notes
+            if artifact_path:
+                record.artifact_path = artifact_path
             record.updated_at = datetime.utcnow()
         else:
             record = ComplianceRecord(
                 user_id=session['user_id'],
                 requirement_id=requirement_id,
                 status=status,
-                notes=notes
+                notes=notes,
+                artifact_path=artifact_path
             )
             db.session.add(record)
         
